@@ -52,10 +52,17 @@ A powerful Windows background application that provides AI-powered assistance th
 
 ### Installation
 
-1. **Download or Clone**
+#### Option 1: Download Pre-built Executable (Recommended)
+1. **Download from Releases**
+   - Visit [GitHub Releases](https://github.com/jeswanth1212/namba-dhn/releases)
+   - Download `StealthAssistant.exe` or the complete package
+   - No build required - ready to run!
+
+#### Option 2: Build from Source
+1. **Clone the Repository**
    ```bash
    git clone https://github.com/jeswanth1212/namba-dhn.git
-   cd namba-dhn
+   cd namba-dhn/StealthAssistant
    ```
 
 2. **Build the Application**
