@@ -1,0 +1,43 @@
+name: Build StealthAssistant
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '6.0.x'
+        
+    - name: Restore dependencies
+      run: dotnet restore StealthAssistant/StealthAssistant.csproj
+      
+    - name: Build application
+      run: dotnet build StealthAssistant/StealthAssistant.csproj -c Release --no-restore
+      
+    - name: Publish standalone executable
+      run: dotnet publish StealthAssistant/StealthAssistant.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true -o StealthAssistant/dist
+      
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: StealthAssistant-windows
+        path: StealthAssistant/dist/
+        retention-days: 30
+        
+    - name: Upload executable only
+      uses: actions/upload-artifact@v4
+      with:
+        name: StealthAssistant.exe
+        path: StealthAssistant/dist/StealthAssistant.exe
+        retention-days: 90

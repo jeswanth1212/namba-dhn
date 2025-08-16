@@ -1,0 +1,76 @@
+name: Release StealthAssistant
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '6.0.x'
+        
+    - name: Restore dependencies
+      run: dotnet restore StealthAssistant/StealthAssistant.csproj
+      
+    - name: Build and publish
+      run: dotnet publish StealthAssistant/StealthAssistant.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true -o release
+      
+    - name: Create release package
+      run: |
+        # Create release directory structure
+        mkdir StealthAssistant-Release
+        cp release/StealthAssistant.exe StealthAssistant-Release/
+        cp StealthAssistant/env-template.txt StealthAssistant-Release/
+        cp StealthAssistant/README.md StealthAssistant-Release/
+        cp StealthAssistant/LICENSE StealthAssistant-Release/
+        
+        # Create ZIP package
+        Compress-Archive -Path StealthAssistant-Release/* -DestinationPath StealthAssistant-${env:GITHUB_REF_NAME}-windows.zip
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          StealthAssistant-${{ github.ref_name }}-windows.zip
+          release/StealthAssistant.exe
+        body: |
+          ## 🥷 StealthAssistant ${{ github.ref_name }}
+          
+          ### 📥 Downloads
+          - **Complete Package**: `StealthAssistant-${{ github.ref_name }}-windows.zip` (Includes executable, documentation, and templates)
+          - **Executable Only**: `StealthAssistant.exe` (Just the application file)
+          
+          ### 🚀 Quick Start
+          1. Download the complete package
+          2. Extract to your desired location
+          3. Follow the setup instructions in README.md
+          4. Get your Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+          5. Create `.env` file with your API key
+          6. Run `StealthAssistant.exe`
+          
+          ### ✨ Features
+          - AI-powered assistance with Gemini 2.5 Pro
+          - Global hotkeys (Z+M, Z+S, Z+Q, Z+J, Z+A)
+          - Complete stealth operation
+          - Smart clipboard management
+          - MCQ cursor movement feedback
+          
+          ### 📋 System Requirements
+          - Windows 10/11
+          - Internet connection
+          - Gemini API key
+          
+          See README.md for detailed setup and usage instructions.
+        draft: false
+        prerelease: false
