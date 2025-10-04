@@ -34,7 +34,9 @@ namespace StealthAssistant
         private IntPtr _hookID = IntPtr.Zero;
         private readonly LowLevelKeyboardProc _proc;
         private bool _zPressed = false;
+        private bool _rPressed = false; // For three-key sequences
         private DateTime _lastZPress = DateTime.MinValue;
+        private DateTime _lastRPress = DateTime.MinValue;
         private readonly System.Windows.Forms.Timer _sequenceTimer;
         private const int SEQUENCE_TIMEOUT_MS = 1000;
         
@@ -108,22 +110,48 @@ namespace StealthAssistant
             if (key == Keys.Z)
             {
                 _zPressed = true;
+                _rPressed = false;
                 _lastZPress = now;
                 _sequenceTimer.Stop();
                 _sequenceTimer.Start();
                 Debug.WriteLine("Z key pressed - waiting for sequence key");
             }
-            else if (_zPressed && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
+            else if (_zPressed && key == Keys.R && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
             {
+                // Z+R detected, wait for third key
+                _rPressed = true;
+                _lastRPress = now;
+                _sequenceTimer.Stop();
+                _sequenceTimer.Start();
+                Debug.WriteLine("Z+R pressed - waiting for S/Q/J");
+            }
+            else if (_zPressed && _rPressed && (now - _lastRPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
+            {
+                // Three-key sequence: Z+R+S/Q/J for screenshot OCR
+                var hotkeyId = GetThreeKeyHotkeyId(key);
+                if (hotkeyId > 0)
+                {
+                    Debug.WriteLine($"Z+R+{key} sequence detected");
+                    OnHotkeyDetected(hotkeyId);
+                    ResetSequence();
+                    return;
+                }
+                ResetSequence();
+            }
+            else if (_zPressed && !_rPressed && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
+            {
+                // Two-key sequence: Z+Key (existing functionality)
                 var hotkeyId = GetHotkeyId(key);
                 if (hotkeyId > 0)
                 {
                     Debug.WriteLine($"Z+{key} sequence detected");
                     OnHotkeyDetected(hotkeyId);
                     ResetSequence();
+                    return;
                 }
+                ResetSequence();
             }
-            else if (key != Keys.Z)
+            else if (key != Keys.Z && key != Keys.R)
             {
                 ResetSequence();
             }
@@ -138,6 +166,21 @@ namespace StealthAssistant
                 Keys.J => 3, // Z+J - Java code
                 Keys.A => 4, // Z+A - Append
                 Keys.M => 5, // Z+M - Status
+                Keys.X => 6, // Z+X - Screenshot MCQ (old)
+                Keys.E => 7, // Z+E - Toggle clipboard viewer
+                Keys.Up => 8, // Z+Up - Scroll up in viewer
+                Keys.Down => 9, // Z+Down - Scroll down in viewer
+                _ => 0
+            };
+        }
+        
+        private int GetThreeKeyHotkeyId(Keys key)
+        {
+            return key switch
+            {
+                Keys.S => 10, // Z+R+S - Screenshot OCR Normal query
+                Keys.Q => 11, // Z+R+Q - Screenshot OCR MCQ query
+                Keys.J => 12, // Z+R+J - Screenshot OCR Java code
                 _ => 0
             };
         }
@@ -150,6 +193,7 @@ namespace StealthAssistant
         private void ResetSequence()
         {
             _zPressed = false;
+            _rPressed = false;
             _sequenceTimer.Stop();
         }
         

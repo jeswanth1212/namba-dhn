@@ -10,6 +10,8 @@ A powerful Windows background application that provides AI-powered assistance th
 
 ### 🎯 **AI-Powered Assistance**
 - **Gemini 2.5 Pro Integration**: Latest Google AI model for superior responses
+- **Vision AI Capabilities**: Gemini 2.5 Flash for screenshot analysis
+- **Screenshot-to-Answer**: Direct screen capture and MCQ analysis
 - **Context Maintenance**: Maintains conversation history across interactions
 - **Unlimited Responses**: No token limits - get complete, full-length answers
 - **Smart Content Detection**: Automatically handles different content types
@@ -18,6 +20,7 @@ A powerful Windows background application that provides AI-powered assistance th
 - **Z+M**: Show application status
 - **Z+S**: Normal AI queries with popup responses
 - **Z+Q**: Multiple choice questions with cursor movement feedback
+- **Z+X**: Screenshot-based MCQ analysis with automatic answer detection
 - **Z+J**: Java code generation with clean output
 - **Z+A**: Smart clipboard text combination
 
@@ -40,8 +43,9 @@ A powerful Windows background application that provides AI-powered assistance th
   - B = Right ➡️  
   - C = Down ⬇️
   - D = Left ⬅️
+- **Answer Popups**: Bottom-right notification showing "Answer: X" for MCQ responses
 - **Mouse Notifications**: Subtle flicker for code generation completion
-- **Popup Responses**: Bottom-right notifications for queries
+- **Popup Responses**: Bottom-right notifications for queries and errors
 
 ## 🚀 Quick Start
 
@@ -107,6 +111,7 @@ A powerful Windows background application that provides AI-powered assistance th
 | **Z+M** | Status Check | Shows "Running" confirmation popup |
 | **Z+S** | Normal Query | General AI assistance with popup response |
 | **Z+Q** | MCQ Processing | Multiple choice questions with cursor movement |
+| **Z+X** | Screenshot MCQ | Screen capture + AI analysis + cursor movement |
 | **Z+J** | Java Code | Clean Java code generation to clipboard |
 | **Z+A** | Text Combination | Combines last 2 clipboard entries |
 
@@ -120,8 +125,17 @@ A powerful Windows background application that provides AI-powered assistance th
 #### For Multiple Choice Questions (Z+Q):
 1. Copy the MCQ with options to clipboard
 2. Press **Z** then **Q**
-3. No popup appears, but answer copies to clipboard
-4. Cursor moves to indicate the correct answer
+3. Answer copies to clipboard + cursor moves to indicate correct option
+4. Small popup shows "Answer: X" in bottom right for 3 seconds
+
+#### For Screenshot MCQ Analysis (Z+X):
+1. Ensure the MCQ is visible on your screen
+2. Press **Z** then **X**
+3. Screenshot is captured and analyzed by AI vision
+4. Answer copies to clipboard + cursor moves to indicate correct option
+5. Small popup shows "Answer: X" in bottom right for 3 seconds
+6. If vision fails, OCR text extraction is attempted as fallback
+7. Error popup appears for 2 seconds if any issues occur
 
 #### For Java Code (Z+J):
 1. Copy your coding request to clipboard
@@ -157,7 +171,14 @@ A powerful Windows background application that provides AI-powered assistance th
 **MCQ Solver:**
 ```
 1. Copy: "What is 2+2? A) 3 B) 4 C) 5 D) 6"
-2. Z+Q → Answer copies to clipboard, cursor moves right (B is correct)
+2. Z+Q → Answer copies to clipboard, cursor moves right (B is correct), popup shows "Answer: B"
+```
+
+**Screenshot MCQ Analysis:**
+```
+1. Display MCQ on screen: "Which planet is closest to the sun? A) Venus B) Mercury C) Mars D) Earth"
+2. Z+X → Screenshot captured, AI analyzes image, popup shows "Answer: B", cursor moves right
+3. If image analysis fails, OCR extracts text and processes normally
 ```
 
 ## 🛠️ Technical Details
@@ -165,7 +186,8 @@ A powerful Windows background application that provides AI-powered assistance th
 ### Architecture
 - **Framework**: .NET 6.0 Windows Forms
 - **Language**: C# with advanced Windows API integration
-- **AI Model**: Google Gemini 2.5 Pro
+- **AI Models**: Google Gemini 2.5 Pro + Gemini 2.5 Flash (multimodal)
+- **Screenshot Capture**: Proctoring-resistant Windows API (BitBlt, GDI32)
 - **Global Hooks**: Low-level keyboard hook for Z+key sequences
 - **Stealth Tech**: Process obfuscation and memory optimization
 

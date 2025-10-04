@@ -10,6 +10,10 @@ using Newtonsoft.Json;
 using System.IO;
 using System.Reflection;
 using System.Drawing;
+using Windows.Graphics.Imaging;
+using Windows.Media.Ocr;
+using Windows.Storage.Streams;
+using System.Runtime.InteropServices.WindowsRuntime;
 
 namespace StealthAssistant
 {
@@ -47,6 +51,34 @@ namespace StealthAssistant
         [DllImport("kernel32.dll")]
         private static extern IntPtr GetCurrentProcess();
         
+        // Screenshot capture API imports
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+        
+        [DllImport("user32.dll")]
+        private static extern IntPtr ReleaseDC(IntPtr hWnd, IntPtr hDC);
+        
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+        
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleBitmap(IntPtr hDC, int width, int height);
+        
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr hDC, IntPtr hGDIObj);
+        
+        [DllImport("gdi32.dll")]
+        private static extern bool BitBlt(IntPtr hDestDC, int x, int y, int nWidth, int nHeight, IntPtr hSrcDC, int xSrc, int ySrc, uint dwRop);
+        
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr hObject);
+        
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hDC);
+        
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+        
         #endregion
         
 
@@ -59,6 +91,7 @@ namespace StealthAssistant
         private ZKeySequenceWindow? _hotkeyWindow;
         private Random _random;
         private readonly List<string> _clipboardHistory;
+        private StealthClipboardViewer? _clipboardViewer;
         
         #endregion
         
@@ -67,7 +100,7 @@ namespace StealthAssistant
         public StealthAssistantCore()
         {
             _httpClient = new HttpClient();
-            _httpClient.Timeout = TimeSpan.FromSeconds(60); // 60 second timeout for harder questions
+            _httpClient.Timeout = TimeSpan.FromSeconds(180); // 180 second timeout for complex OCR questions
             _conversationHistory = new List<ChatMessage>();
             _geminiApiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? "";
             _random = new Random();
@@ -137,6 +170,9 @@ namespace StealthAssistant
         {
             _hotkeyWindow = new ZKeySequenceWindow();
             _hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
+            
+            // Create clipboard viewer (initially hidden)
+            _clipboardViewer = new StealthClipboardViewer();
         }
         
         #endregion
@@ -162,20 +198,41 @@ namespace StealthAssistant
         {
             switch (hotkeyId)
             {
-                case 1: // Ctrl+Shift+S
+                case 1: // Z+S
                     await HandleNormalQuery();
                     break;
-                case 2: // Ctrl+Shift+Q
+                case 2: // Z+Q
                     await HandleMCQQuery();
                     break;
-                case 3: // Ctrl+Shift+J
+                case 3: // Z+J
                     await HandleJavaQuery();
                     break;
-                case 4: // Ctrl+Shift+A
+                case 4: // Z+A
                     await HandleAppendToSelection();
                     break;
-                case 5: // Ctrl+Shift+M
+                case 5: // Z+M
                     ShowStatusPopup();
+                    break;
+                case 6: // Z+X (old screenshot)
+                    await HandleScreenshotMCQQuery();
+                    break;
+                case 7: // Z+E - Toggle clipboard viewer
+                    HandleToggleClipboardViewer();
+                    break;
+                case 8: // Z+Up - Scroll up
+                    HandleScrollUp();
+                    break;
+                case 9: // Z+Down - Scroll down
+                    HandleScrollDown();
+                    break;
+                case 10: // Z+R+S - Screenshot OCR Normal
+                    await HandleScreenshotOCRNormal();
+                    break;
+                case 11: // Z+R+Q - Screenshot OCR MCQ
+                    await HandleScreenshotOCRMCQ();
+                    break;
+                case 12: // Z+R+J - Screenshot OCR Java
+                    await HandleScreenshotOCRJava();
                     break;
             }
         }
@@ -199,6 +256,146 @@ namespace StealthAssistant
         #endregion
         
         #region Query Handlers
+        
+        private void HandleToggleClipboardViewer()
+        {
+            var clipboardText = GetClipboardText();
+            _clipboardViewer?.ToggleVisibility(clipboardText);
+        }
+        
+        private void HandleScrollUp()
+        {
+            _clipboardViewer?.ScrollUp();
+        }
+        
+        private void HandleScrollDown()
+        {
+            _clipboardViewer?.ScrollDown();
+        }
+        
+        private async Task HandleScreenshotOCRNormal()
+        {
+            try
+            {
+                // Capture screenshot
+                var screenshotBase64 = CaptureScreenshotAsBase64();
+                if (string.IsNullOrEmpty(screenshotBase64))
+                {
+                    ShowErrorPopup("Screenshot capture failed");
+                    return;
+                }
+                
+                // Extract text using Windows OCR
+                var extractedText = await ExtractTextFromImageAsync(screenshotBase64);
+                
+                if (string.IsNullOrEmpty(extractedText))
+                {
+                    ShowErrorPopup("OCR failed - no text found");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Send to Gemini
+                var response = await SendToGemini(extractedText, "normal");
+                ShowResponsePopup(response);
+                
+                // Copy response to clipboard
+                SetClipboardText(response);
+                AddToClipboardHistory(response);
+                FlickerMouse();
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Screenshot OCR Normal failed: {ex.Message}");
+            }
+        }
+        
+        private async Task HandleScreenshotOCRMCQ()
+        {
+            try
+            {
+                // Capture screenshot
+                var screenshotBase64 = CaptureScreenshotAsBase64();
+                if (string.IsNullOrEmpty(screenshotBase64))
+                {
+                    ShowErrorPopup("Screenshot capture failed");
+                    return;
+                }
+                
+                // Extract text using Windows OCR
+                var extractedText = await ExtractTextFromImageAsync(screenshotBase64);
+                
+                if (string.IsNullOrEmpty(extractedText))
+                {
+                    ShowErrorPopup("OCR failed - no text found");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Send to Gemini as MCQ
+                var response = await SendToGemini(extractedText, "mcq");
+                
+                // Copy response to clipboard
+                SetClipboardText(response);
+                AddToClipboardHistory(response);
+                
+                // Detect answer
+                var detectedAnswer = DetectMCQAnswer(response);
+                if (!string.IsNullOrEmpty(detectedAnswer))
+                {
+                    ShowAnswerPopup(detectedAnswer.ToUpper());
+                }
+                
+                // Move cursor based on detected answer
+                MoveCursorForMCQAnswer(response);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Screenshot OCR MCQ failed: {ex.Message}");
+            }
+        }
+        
+        private async Task HandleScreenshotOCRJava()
+        {
+            try
+            {
+                // Capture screenshot
+                var screenshotBase64 = CaptureScreenshotAsBase64();
+                if (string.IsNullOrEmpty(screenshotBase64))
+                {
+                    ShowErrorPopup("Screenshot capture failed");
+                    return;
+                }
+                
+                // Extract text using Windows OCR
+                var extractedText = await ExtractTextFromImageAsync(screenshotBase64);
+                
+                if (string.IsNullOrEmpty(extractedText))
+                {
+                    ShowErrorPopup("OCR failed - no text found");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Send to Gemini as Java code
+                var response = await SendToGemini(extractedText, "java");
+                
+                // Copy code to clipboard
+                SetClipboardText(response);
+                AddToClipboardHistory(response);
+                FlickerMouse();
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Screenshot OCR Java failed: {ex.Message}");
+            }
+        }
         
         private async Task HandleNormalQuery()
         {
@@ -230,6 +427,13 @@ namespace StealthAssistant
             SetClipboardText(response);
             AddToClipboardHistory(response);
             
+            // Detect and show answer popup
+            var detectedAnswer = DetectMCQAnswer(response);
+            if (!string.IsNullOrEmpty(detectedAnswer))
+            {
+                ShowAnswerPopup(detectedAnswer.ToUpper());
+            }
+            
             // Move cursor based on detected answer
             MoveCursorForMCQAnswer(response);
         }
@@ -248,6 +452,84 @@ namespace StealthAssistant
             SetClipboardText(response);
             AddToClipboardHistory(response);
             FlickerMouse();
+        }
+        
+        private async Task HandleScreenshotMCQQuery()
+        {
+            var errors = new List<string>();
+            
+            try
+            {
+                // Capture screenshot
+                var screenshotBase64 = CaptureScreenshotAsBase64();
+                if (string.IsNullOrEmpty(screenshotBase64))
+                {
+                    errors.Add("Screenshot capture failed");
+                }
+                
+                string? response = null;
+                
+                if (!string.IsNullOrEmpty(screenshotBase64))
+                {
+                    // Try vision model first
+                    try
+                    {
+                        response = await SendToGeminiVision(screenshotBase64, "screenshot_mcq");
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"Vision API failed: {ex.Message}");
+                        
+                        // Fallback to OCR + regular model
+                        try
+                        {
+                            var extractedText = ExtractTextFromImage(screenshotBase64);
+                            if (!string.IsNullOrEmpty(extractedText))
+                            {
+                                response = await SendToGemini(extractedText, "mcq");
+                            }
+                            else
+                            {
+                                errors.Add("Text extraction failed");
+                            }
+                        }
+                        catch (Exception ocrEx)
+                        {
+                            errors.Add($"OCR fallback failed: {ocrEx.Message}");
+                        }
+                    }
+                }
+                
+                // Handle response or errors
+                if (!string.IsNullOrEmpty(response))
+                {
+                    // Copy response to clipboard
+                    SetClipboardText(response);
+                    AddToClipboardHistory(response);
+                    
+                    // Detect answer letter for popup and cursor movement
+                    var detectedAnswer = DetectMCQAnswer(response);
+                    
+                    // Show answer popup in bottom right
+                    if (!string.IsNullOrEmpty(detectedAnswer))
+                    {
+                        ShowAnswerPopup(detectedAnswer.ToUpper());
+                    }
+                    
+                    // Move cursor based on detected answer
+                    MoveCursorForMCQAnswer(response);
+                }
+                
+                // Show errors if any occurred
+                if (errors.Count > 0)
+                {
+                    ShowErrorPopup(string.Join("; ", errors));
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Screenshot MCQ failed: {ex.Message}");
+            }
         }
         
         private Task HandleAppendToSelection()
@@ -273,7 +555,7 @@ namespace StealthAssistant
         
         #region Gemini API Integration
         
-        private async Task<string> SendToGemini(string input, string queryType)
+        private async Task<string> SendToGemini(string input, string queryType, bool useFastModel = false)
         {
             try
             {
@@ -302,7 +584,9 @@ namespace StealthAssistant
                 var json = JsonConvert.SerializeObject(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 
-                var url = $"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={_geminiApiKey}";
+                // Use Flash model for faster responses, Pro model for complex reasoning
+                var modelName = useFastModel ? "gemini-2.0-flash-exp" : "gemini-2.0-flash-exp";
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{modelName}:generateContent?key={_geminiApiKey}";
                 var response = await _httpClient.PostAsync(url, content);
                 
                 if (response.IsSuccessStatusCode)
@@ -329,11 +613,88 @@ namespace StealthAssistant
             }
             catch (TaskCanceledException)
             {
-                return "Request timeout - question too complex, try breaking it down";
+                return "Request timeout (180s) - API took too long. Check internet connection or try again.";
+            }
+            catch (HttpRequestException ex)
+            {
+                return $"Network error: {ex.Message}";
             }
             catch (Exception ex)
             {
                 return $"Error: {ex.Message}";
+            }
+        }
+        
+        private async Task<string> SendToGeminiVision(string imageBase64, string queryType)
+        {
+            try
+            {
+                var systemPrompt = GetSystemPrompt(queryType);
+                
+                var requestBody = new
+                {
+                    contents = new[]
+                    {
+                        new
+                        {
+                            parts = new object[]
+                            {
+                                new { text = systemPrompt },
+                                new 
+                                { 
+                                    inline_data = new
+                                    {
+                                        mime_type = "image/png",
+                                        data = imageBase64
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    generationConfig = new
+                    {
+                        temperature = 0.1
+                    }
+                };
+                
+                var json = JsonConvert.SerializeObject(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={_geminiApiKey}";
+                var response = await _httpClient.PostAsync(url, content);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseText = await response.Content.ReadAsStringAsync();
+                    var result = JsonConvert.DeserializeObject<GeminiResponse>(responseText);
+                    
+                    var aiResponse = result?.Candidates?[0]?.Content?.Parts?[0]?.Text ?? "No response from AI";
+                    
+                    // Check if response is empty or just whitespace
+                    if (string.IsNullOrWhiteSpace(aiResponse) || aiResponse == "No response from AI")
+                    {
+                        return $"Empty response - try simpler question or check API quota";
+                    }
+                    
+                    return aiResponse;
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    throw new Exception($"API Error {response.StatusCode}: {errorContent}");
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                throw new Exception("Request timeout (180s) - image processing took too long");
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new Exception($"Network error: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Vision API Error: {ex.Message}");
             }
         }
         
@@ -344,6 +705,7 @@ namespace StealthAssistant
                 "mcq" => "You are helping with multiple choice questions. Provide clear, concise answers. If this is a multiple choice question, give the correct answer with brief explanation.",
                 "java" => "Give only the Java code solution for this problem. Do not include any comments, explanations, or extra text. Only provide the code",
                 "normal" => "You are a helpful assistant. Provide clear, concise responses to questions.",
+                "screenshot_mcq" => "Analyze this screenshot for multiple choice questions. Return only the letter (A, B, C, or D) of the correct answer.",
                 _ => "You are a helpful assistant."
             };
         }
@@ -481,6 +843,145 @@ namespace StealthAssistant
             popup.Show();
         }
         
+        private void ShowErrorPopup(string message)
+        {
+            var popup = new ResponsePopup(message);
+            popup.Show();
+            
+            // Auto-close after 2 seconds
+            var timer = new System.Windows.Forms.Timer();
+            timer.Interval = 2000;
+            timer.Tick += (s, e) => 
+            {
+                timer.Stop();
+                popup.Close();
+            };
+            timer.Start();
+        }
+        
+        private void ShowAnswerPopup(string answer)
+        {
+            var popup = new ResponsePopup($"Answer: {answer}");
+            popup.Show();
+            
+            // Auto-close after 3 seconds (slightly longer to see the answer)
+            var timer = new System.Windows.Forms.Timer();
+            timer.Interval = 3000;
+            timer.Tick += (s, e) => 
+            {
+                timer.Stop();
+                popup.Close();
+            };
+            timer.Start();
+        }
+        
+        private string CaptureScreenshotAsBase64()
+        {
+            try
+            {
+                // Get screen dimensions
+                int screenWidth = GetSystemMetrics(0); // SM_CXSCREEN
+                int screenHeight = GetSystemMetrics(1); // SM_CYSCREEN
+                
+                // Get desktop device context
+                IntPtr desktopDC = GetDC(IntPtr.Zero);
+                
+                // Create compatible DC and bitmap
+                IntPtr memoryDC = CreateCompatibleDC(desktopDC);
+                IntPtr bitmap = CreateCompatibleBitmap(desktopDC, screenWidth, screenHeight);
+                
+                // Select bitmap into memory DC
+                IntPtr oldBitmap = SelectObject(memoryDC, bitmap);
+                
+                // Copy desktop to memory DC
+                bool success = BitBlt(memoryDC, 0, 0, screenWidth, screenHeight, desktopDC, 0, 0, 0x00CC0020); // SRCCOPY
+                
+                if (!success)
+                {
+                    // Clean up and return empty
+                    SelectObject(memoryDC, oldBitmap);
+                    DeleteObject(bitmap);
+                    DeleteDC(memoryDC);
+                    ReleaseDC(IntPtr.Zero, desktopDC);
+                    return string.Empty;
+                }
+                
+                // Convert to managed Bitmap
+                var managedBitmap = Bitmap.FromHbitmap(bitmap);
+                
+                // Convert to Base64
+                string base64String;
+                using (var memoryStream = new MemoryStream())
+                {
+                    managedBitmap.Save(memoryStream, System.Drawing.Imaging.ImageFormat.Png);
+                    byte[] imageBytes = memoryStream.ToArray();
+                    base64String = Convert.ToBase64String(imageBytes);
+                }
+                
+                // Clean up
+                managedBitmap.Dispose();
+                SelectObject(memoryDC, oldBitmap);
+                DeleteObject(bitmap);
+                DeleteDC(memoryDC);
+                ReleaseDC(IntPtr.Zero, desktopDC);
+                
+                return base64String;
+            }
+            catch (Exception)
+            {
+                // Log error but don't show popup here (handled by caller)
+                return string.Empty;
+            }
+        }
+        
+        private async Task<string> ExtractTextFromImageAsync(string base64Image)
+        {
+            try
+            {
+                // Convert base64 to byte array
+                byte[] imageBytes = Convert.FromBase64String(base64Image);
+                
+                // Create InMemoryRandomAccessStream
+                using var stream = new InMemoryRandomAccessStream();
+                await stream.WriteAsync(imageBytes.AsBuffer());
+                stream.Seek(0);
+                
+                // Create BitmapDecoder
+                var decoder = await BitmapDecoder.CreateAsync(stream);
+                var softwareBitmap = await decoder.GetSoftwareBitmapAsync();
+                
+                // Get OCR engine for English
+                var ocrEngine = OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language("en"));
+                if (ocrEngine == null)
+                {
+                    return string.Empty;
+                }
+                
+                // Perform OCR
+                var ocrResult = await ocrEngine.RecognizeAsync(softwareBitmap);
+                
+                // Extract text
+                var extractedText = new StringBuilder();
+                foreach (var line in ocrResult.Lines)
+                {
+                    extractedText.AppendLine(line.Text);
+                }
+                
+                return extractedText.ToString().Trim();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"OCR Error: {ex.Message}");
+                return string.Empty;
+            }
+        }
+        
+        private string ExtractTextFromImage(string base64Image)
+        {
+            // Synchronous wrapper for compatibility
+            return ExtractTextFromImageAsync(base64Image).GetAwaiter().GetResult();
+        }
+        
         private void FlickerMouse()
         {
             GetCursorPos(out Point currentPos);
@@ -563,6 +1064,7 @@ namespace StealthAssistant
         public void Dispose()
         {
             _hotkeyWindow?.Dispose();
+            _clipboardViewer?.Dispose();
             _httpClient?.Dispose();
         }
         

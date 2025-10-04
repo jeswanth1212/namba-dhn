@@ -52,6 +52,6 @@ Please test all hotkeys and indicate which work/don't work:
 
 ## 🎯 Priority
 - [ ] Low - Minor inconvenience
-- [ ] Medium - Affects functionality
+- [ ] Medium - Affects functionalityza
 - [ ] High - Prevents normal use
 - [ ] Critical - Application unusable
