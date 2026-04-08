@@ -93,6 +93,68 @@ namespace StealthAssistant
         private readonly List<string> _clipboardHistory;
         private StealthClipboardViewer? _clipboardViewer;
         
+        // Auto-typing fields
+        private System.Threading.Timer? _autoTypeTimer;
+        private string _autoTypeText = "";
+        private int _autoTypePosition = 0;
+        private bool _autoTypePaused = false;
+        private readonly object _autoTypeLock = new object();
+        
+        // SendInput API declarations for hardware-level keyboard simulation
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT
+        {
+            public uint type;
+            public INPUTUNION u;
+        }
+        
+        [StructLayout(LayoutKind.Explicit, Size = 28)]
+        private struct INPUTUNION
+        {
+            [FieldOffset(0)]
+            public MOUSEINPUT mi;
+            [FieldOffset(0)]
+            public KEYBDINPUT ki;
+            [FieldOffset(0)]
+            public HARDWAREINPUT hi;
+        }
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KEYBDINPUT
+        {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+        
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HARDWAREINPUT
+        {
+            public uint uMsg;
+            public ushort wParamL;
+            public ushort wParamH;
+        }
+        
+        private const uint INPUT_KEYBOARD = 1;
+        private const uint KEYEVENTF_UNICODE = 0x0004;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+        
         #endregion
         
         #region Constructor
@@ -198,41 +260,35 @@ namespace StealthAssistant
         {
             switch (hotkeyId)
             {
-                case 1: // Z+S
-                    await HandleNormalQuery();
-                    break;
-                case 2: // Z+Q
-                    await HandleMCQQuery();
-                    break;
-                case 3: // Z+J
-                    await HandleJavaQuery();
-                    break;
-                case 4: // Z+A
-                    await HandleAppendToSelection();
-                    break;
-                case 5: // Z+M
+                case 1: // Z+M - Status
                     ShowStatusPopup();
                     break;
-                case 6: // Z+X (old screenshot)
-                    await HandleScreenshotMCQQuery();
+                case 2: // Z+W - Extract text and get AI response
+                    await HandleExtractAndQuery();
                     break;
-                case 7: // Z+E - Toggle clipboard viewer
+                case 3: // Z+J - Generate Java code
+                    await HandleExtractAndGenerateCode("java");
+                    break;
+                case 4: // Z+P - Generate Python code
+                    await HandleExtractAndGenerateCode("python");
+                    break;
+                case 5: // Z+C - Generate C++ code
+                    await HandleExtractAndGenerateCode("cpp");
+                    break;
+                case 6: // Z+E - Toggle clipboard viewer
                     HandleToggleClipboardViewer();
                     break;
-                case 8: // Z+Up - Scroll up
-                    HandleScrollUp();
+                case 7: // Z+V - Auto-type clipboard
+                    HandleAutoTypeStart();
                     break;
-                case 9: // Z+Down - Scroll down
-                    HandleScrollDown();
+                case 8: // ` - Pause/Resume auto-typing
+                    HandleAutoTypePauseResume();
                     break;
-                case 10: // Z+R+S - Screenshot OCR Normal
-                    await HandleScreenshotOCRNormal();
+                case 10: // Z+B - Auto-type for compiler (strips indentation)
+                    HandleAutoTypeCompilerMode();
                     break;
-                case 11: // Z+R+Q - Screenshot OCR MCQ
-                    await HandleScreenshotOCRMCQ();
-                    break;
-                case 12: // Z+R+J - Screenshot OCR Java
-                    await HandleScreenshotOCRJava();
+                case 12: // Z+R - Reset conversation history
+                    HandleResetConversationHistory();
                     break;
             }
         }
@@ -261,6 +317,21 @@ namespace StealthAssistant
         {
             var clipboardText = GetClipboardText();
             _clipboardViewer?.ToggleVisibility(clipboardText);
+        }
+        
+        private void HandleResetConversationHistory()
+        {
+            try
+            {
+                _conversationHistory.Clear();
+                ShowResponsePopup("Conversation history cleared!");
+                Debug.WriteLine("Conversation history reset");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Reset history error: {ex.Message}");
+                ShowErrorPopup($"Error: {ex.Message}");
+            }
         }
         
         private void HandleScrollUp()
@@ -448,10 +519,96 @@ namespace StealthAssistant
             
             var response = await SendToGemini(clipboardText, "java");
             
+            // Extract clean Java code (remove comments if any)
+            var cleanCode = ExtractJavaCodeWithoutComments(response);
+            
             // Copy entire response to clipboard (should be clean Java code)
-            SetClipboardText(response);
-            AddToClipboardHistory(response);
+            SetClipboardText(cleanCode);
+            AddToClipboardHistory(cleanCode);
             FlickerMouse();
+        }
+        
+        private async Task HandleJavaCodeFromScreen()
+        {
+            try
+            {
+                IntPtr foregroundWindow = GetForegroundWindow();
+                if (foregroundWindow == IntPtr.Zero)
+                {
+                    ShowErrorPopup("No foreground window found");
+                    return;
+                }
+                
+                var allExtractedText = new StringBuilder();
+                
+                // Strategy 1: Try PrintWindow first (might bypass screenshot detection)
+                try
+                {
+                    string printWindowBase64 = AlternativeTextExtractor.CaptureWindowUsingPrintWindow(foregroundWindow);
+                    
+                    if (!string.IsNullOrEmpty(printWindowBase64))
+                    {
+                        var ocrText = await ExtractTextFromImageAsync(printWindowBase64);
+                        
+                        if (!string.IsNullOrWhiteSpace(ocrText))
+                        {
+                            allExtractedText.AppendLine(ocrText);
+                        }
+                    }
+                }
+                catch { }
+                
+                // Strategy 2: IAccessible (Accessibility API)
+                try
+                {
+                    string accessibleText = AlternativeTextExtractor.ExtractTextUsingIAccessible(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(accessibleText))
+                    {
+                        allExtractedText.AppendLine(accessibleText);
+                    }
+                }
+                catch { }
+                
+                // Strategy 3: Window enumeration
+                try
+                {
+                    string windowText = AlternativeTextExtractor.ExtractTextFromWindowTree(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(windowText))
+                    {
+                        allExtractedText.AppendLine(windowText);
+                    }
+                }
+                catch { }
+                
+                string extractedText = allExtractedText.ToString().Trim();
+                
+                if (string.IsNullOrWhiteSpace(extractedText))
+                {
+                    ShowErrorPopup("Screen extraction failed - try other methods");
+                    return;
+                }
+                
+                // Add extracted text to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Send to Gemini for Java code generation
+                var response = await SendToGemini(extractedText, "java");
+                
+                // Extract clean Java code (remove comments if any)
+                var cleanCode = ExtractJavaCodeWithoutComments(response);
+                
+                // Copy code to clipboard
+                SetClipboardText(cleanCode);
+                AddToClipboardHistory(cleanCode);
+                FlickerMouse();
+                
+                // Show success popup
+                ShowResponsePopup("Java code generated and copied to clipboard");
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Java code generation failed: {ex.Message}");
+            }
         }
         
         private async Task HandleScreenshotMCQQuery()
@@ -460,11 +617,31 @@ namespace StealthAssistant
             
             try
             {
-                // Capture screenshot
-                var screenshotBase64 = CaptureScreenshotAsBase64();
+                string? screenshotBase64 = null;
+                
+                // Try BitBlt first (standard method)
+                screenshotBase64 = CaptureScreenshotAsBase64();
+                
+                // If BitBlt fails, try PrintWindow (alternative method that might bypass detection)
                 if (string.IsNullOrEmpty(screenshotBase64))
                 {
-                    errors.Add("Screenshot capture failed");
+                    try
+                    {
+                        IntPtr foregroundWindow = GetForegroundWindow();
+                        if (foregroundWindow != IntPtr.Zero)
+                        {
+                            screenshotBase64 = AlternativeTextExtractor.CaptureWindowUsingPrintWindow(foregroundWindow);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"PrintWindow fallback failed: {ex.Message}");
+                    }
+                }
+                
+                if (string.IsNullOrEmpty(screenshotBase64))
+                {
+                    errors.Add("All screenshot methods failed");
                 }
                 
                 string? response = null;
@@ -483,7 +660,7 @@ namespace StealthAssistant
                         // Fallback to OCR + regular model
                         try
                         {
-                            var extractedText = ExtractTextFromImage(screenshotBase64);
+                            var extractedText = await ExtractTextFromImageAsync(screenshotBase64);
                             if (!string.IsNullOrEmpty(extractedText))
                             {
                                 response = await SendToGemini(extractedText, "mcq");
@@ -551,6 +728,329 @@ namespace StealthAssistant
             return Task.CompletedTask;
         }
         
+        private async Task HandleAlternativeTextExtraction()
+        {
+            try
+            {
+                IntPtr foregroundWindow = GetForegroundWindow();
+                if (foregroundWindow == IntPtr.Zero)
+                {
+                    ShowErrorPopup("No foreground window found");
+                    return;
+                }
+                
+                var allExtractedText = new StringBuilder();
+                
+                // Strategy 1: Try PrintWindow first (might bypass screenshot detection)
+                try
+                {
+                    string printWindowBase64 = AlternativeTextExtractor.CaptureWindowUsingPrintWindow(foregroundWindow);
+                    if (!string.IsNullOrEmpty(printWindowBase64))
+                    {
+                        var ocrText = await ExtractTextFromImageAsync(printWindowBase64);
+                        if (!string.IsNullOrWhiteSpace(ocrText))
+                        {
+                            allExtractedText.AppendLine("=== PrintWindow OCR ===");
+                            allExtractedText.AppendLine(ocrText);
+                        }
+                    }
+                }
+                catch { }
+                
+                // Strategy 2: IAccessible (Accessibility API)
+                try
+                {
+                    string accessibleText = AlternativeTextExtractor.ExtractTextUsingIAccessible(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(accessibleText))
+                    {
+                        allExtractedText.AppendLine("=== Accessibility API ===");
+                        allExtractedText.AppendLine(accessibleText);
+                    }
+                }
+                catch { }
+                
+                // Strategy 3: Window enumeration
+                try
+                {
+                    string windowText = AlternativeTextExtractor.ExtractTextFromWindowTree(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(windowText))
+                    {
+                        allExtractedText.AppendLine("=== Window Text ===");
+                        allExtractedText.AppendLine(windowText);
+                    }
+                }
+                catch { }
+                
+                string extractedText = allExtractedText.ToString().Trim();
+                
+                if (string.IsNullOrWhiteSpace(extractedText))
+                {
+                    ShowErrorPopup("All extraction methods failed - try other hotkeys");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Send to Gemini
+                var response = await SendToGemini(extractedText, "normal");
+                ShowResponsePopup(response);
+                
+                // Copy response to clipboard
+                SetClipboardText(response);
+                AddToClipboardHistory(response);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Alternative extraction failed: {ex.Message}");
+            }
+        }
+        
+        private async Task HandleWindowEnumerationExtraction()
+        {
+            try
+            {
+                IntPtr foregroundWindow = GetForegroundWindow();
+                if (foregroundWindow == IntPtr.Zero)
+                {
+                    ShowErrorPopup("No foreground window found");
+                    return;
+                }
+                
+                // Try PrintWindow capture first (might bypass screenshot detection)
+                string printWindowBase64 = AlternativeTextExtractor.CaptureWindowUsingPrintWindow(foregroundWindow);
+                
+                if (!string.IsNullOrEmpty(printWindowBase64))
+                {
+                    // Apply OCR to PrintWindow capture
+                    var extractedText = await ExtractTextFromImageAsync(printWindowBase64);
+                    
+                    if (!string.IsNullOrEmpty(extractedText))
+                    {
+                        AddToClipboardHistory(extractedText);
+                        var response = await SendToGemini(extractedText, "normal");
+                        ShowResponsePopup(response);
+                        SetClipboardText(response);
+                        AddToClipboardHistory(response);
+                        return;
+                    }
+                }
+                
+                // Fallback to window enumeration
+                string windowText = AlternativeTextExtractor.ExtractTextFromWindowTree(foregroundWindow);
+                
+                if (string.IsNullOrWhiteSpace(windowText))
+                {
+                    ShowErrorPopup("Window enumeration failed - no text found");
+                    return;
+                }
+                
+                AddToClipboardHistory(windowText);
+                var enumResponse = await SendToGemini(windowText, "normal");
+                ShowResponsePopup(enumResponse);
+                SetClipboardText(enumResponse);
+                AddToClipboardHistory(enumResponse);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Window enumeration failed: {ex.Message}");
+            }
+        }
+        
+        private async Task HandleBrowserTextExtraction()
+        {
+            try
+            {
+                // Extract text specifically from browser windows
+                string extractedText = await AlternativeTextExtractor.ExtractTextFromBrowser();
+                
+                if (string.IsNullOrWhiteSpace(extractedText))
+                {
+                    ShowErrorPopup("Browser extraction failed - ensure browser is active");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Send to Gemini
+                var response = await SendToGemini(extractedText, "normal");
+                ShowResponsePopup(response);
+                
+                // Copy response to clipboard
+                SetClipboardText(response);
+                AddToClipboardHistory(response);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Browser extraction failed: {ex.Message}");
+            }
+        }
+        
+        // NEW METHOD: Z+W - Extract text and get AI response (always normal, shows summary)
+        private async Task HandleExtractAndQuery()
+        {
+            try
+            {
+                IntPtr foregroundWindow = GetForegroundWindow();
+                if (foregroundWindow == IntPtr.Zero)
+                {
+                    ShowErrorPopup("No foreground window found");
+                    return;
+                }
+                
+                var allExtractedText = new StringBuilder();
+                
+                // Use all bypass techniques
+                // Strategy 1: PrintWindow
+                try
+                {
+                    string printWindowBase64 = AlternativeTextExtractor.CaptureWindowUsingPrintWindow(foregroundWindow);
+                    if (!string.IsNullOrEmpty(printWindowBase64))
+                    {
+                        var ocrText = await ExtractTextFromImageAsync(printWindowBase64);
+                        if (!string.IsNullOrWhiteSpace(ocrText))
+                        {
+                            allExtractedText.AppendLine(ocrText);
+                        }
+                    }
+                }
+                catch { }
+                
+                // Strategy 2: IAccessible
+                try
+                {
+                    string accessibleText = AlternativeTextExtractor.ExtractTextUsingIAccessible(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(accessibleText))
+                    {
+                        allExtractedText.AppendLine(accessibleText);
+                    }
+                }
+                catch { }
+                
+                // Strategy 3: Window enumeration
+                try
+                {
+                    string windowText = AlternativeTextExtractor.ExtractTextFromWindowTree(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(windowText))
+                    {
+                        allExtractedText.AppendLine(windowText);
+                    }
+                }
+                catch { }
+                
+                string extractedText = allExtractedText.ToString().Trim();
+                
+                if (string.IsNullOrWhiteSpace(extractedText))
+                {
+                    ShowErrorPopup("All extraction methods failed");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Always use normal query type - AI will detect MCQ automatically
+                // Send to Gemini with smart prompt
+                var response = await SendToGemini(extractedText, "normal");
+                
+                // Show 1-2 line summary in popup
+                string summary = ExtractSummary(response, 2);
+                ShowResponsePopup(summary);
+                
+                // Full response to clipboard
+                SetClipboardText(response);
+                AddToClipboardHistory(response);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Extraction failed: {ex.Message}");
+            }
+        }
+        
+        // NEW METHOD: Z+J/Q/P - Extract text and generate code
+        private async Task HandleExtractAndGenerateCode(string language)
+        {
+            try
+            {
+                IntPtr foregroundWindow = GetForegroundWindow();
+                if (foregroundWindow == IntPtr.Zero)
+                {
+                    ShowErrorPopup("No foreground window found");
+                    return;
+                }
+                
+                var allExtractedText = new StringBuilder();
+                
+                // Use all bypass techniques (same as HandleExtractAndQuery)
+                try
+                {
+                    string printWindowBase64 = AlternativeTextExtractor.CaptureWindowUsingPrintWindow(foregroundWindow);
+                    if (!string.IsNullOrEmpty(printWindowBase64))
+                    {
+                        var ocrText = await ExtractTextFromImageAsync(printWindowBase64);
+                        if (!string.IsNullOrWhiteSpace(ocrText))
+                        {
+                            allExtractedText.AppendLine(ocrText);
+                        }
+                    }
+                }
+                catch { }
+                
+                try
+                {
+                    string accessibleText = AlternativeTextExtractor.ExtractTextUsingIAccessible(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(accessibleText))
+                    {
+                        allExtractedText.AppendLine(accessibleText);
+                    }
+                }
+                catch { }
+                
+                try
+                {
+                    string windowText = AlternativeTextExtractor.ExtractTextFromWindowTree(foregroundWindow);
+                    if (!string.IsNullOrWhiteSpace(windowText))
+                    {
+                        allExtractedText.AppendLine(windowText);
+                    }
+                }
+                catch { }
+                
+                string extractedText = allExtractedText.ToString().Trim();
+                
+                if (string.IsNullOrWhiteSpace(extractedText))
+                {
+                    ShowErrorPopup("All extraction methods failed");
+                    return;
+                }
+                
+                // Add to clipboard history
+                AddToClipboardHistory(extractedText);
+                
+                // Enhance extracted text with PROMPT and ERROR detection
+                string enhancedText = EnhanceExtractedTextForCodeGeneration(extractedText);
+                
+                // Generate code based on language
+                string queryType = language; // "java", "python", or "cpp"
+                var response = await SendToGemini(enhancedText, queryType);
+                
+                // Extract code without comments (keep minimal comments)
+                string code = ExtractCodeWithMinimalComments(response, language);
+                
+                // Show "Generated" popup
+                ShowResponsePopup("Generated");
+                
+                // Code to clipboard
+                SetClipboardText(code);
+                AddToClipboardHistory(code);
+            }
+            catch (Exception ex)
+            {
+                ShowErrorPopup($"Code generation failed: {ex.Message}");
+            }
+        }
+        
         #endregion
         
         #region Gemini API Integration
@@ -563,18 +1063,29 @@ namespace StealthAssistant
                 
                 _conversationHistory.Add(new ChatMessage("user", input));
                 
+                // Build contents array with conversation history
+                var contentsList = new List<object>();
+                
+                // Add system prompt as first message
+                contentsList.Add(new
+                {
+                    role = "user",
+                    parts = new[] { new { text = systemPrompt } }
+                });
+                
+                // Add conversation history
+                foreach (var message in _conversationHistory)
+                {
+                    contentsList.Add(new
+                    {
+                        role = message.Role == "user" ? "user" : "model",
+                        parts = new[] { new { text = message.Content } }
+                    });
+                }
+                
                 var requestBody = new
                 {
-                    contents = new[]
-                    {
-                        new
-                        {
-                            parts = new[]
-                            {
-                                new { text = systemPrompt + "\n\n" + input }
-                            }
-                        }
-                    },
+                    contents = contentsList.ToArray(),
                     generationConfig = new
                     {
                         temperature = 0.1
@@ -584,8 +1095,15 @@ namespace StealthAssistant
                 var json = JsonConvert.SerializeObject(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 
-                // Use Flash model for faster responses, Pro model for complex reasoning
-                var modelName = useFastModel ? "gemini-2.0-flash-exp" : "gemini-2.0-flash-exp";
+                // Select model based on query type for optimal free tier usage
+                // Using gemini-3.1-flash-lite-preview for all queries
+                string modelName = queryType switch
+                {
+                    "mcq" => "gemini-3.1-flash-lite-preview",  // Best free tier for MCQ
+                    "java" => "gemini-3.1-flash-lite-preview",      // Good for code generation
+                    "normal" => "gemini-3.1-flash-lite-preview",    // Balanced for general queries
+                    _ => "gemini-3.1-flash-lite-preview"            // Default fallback
+                };
                 var url = $"https://generativelanguage.googleapis.com/v1beta/models/{modelName}:generateContent?key={_geminiApiKey}";
                 var response = await _httpClient.PostAsync(url, content);
                 
@@ -660,7 +1178,9 @@ namespace StealthAssistant
                 var json = JsonConvert.SerializeObject(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 
-                var url = $"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={_geminiApiKey}";
+                // Using gemini-3.1-flash-lite-preview for vision/screenshot processing
+                var modelName = "gemini-3.1-flash-lite-preview";
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{modelName}:generateContent?key={_geminiApiKey}";
                 var response = await _httpClient.PostAsync(url, content);
                 
                 if (response.IsSuccessStatusCode)
@@ -702,10 +1222,11 @@ namespace StealthAssistant
         {
             return queryType switch
             {
-                "mcq" => "You are helping with multiple choice questions. Provide clear, concise answers. If this is a multiple choice question, give the correct answer with brief explanation.",
-                "java" => "Give only the Java code solution for this problem. Do not include any comments, explanations, or extra text. Only provide the code",
-                "normal" => "You are a helpful assistant. Provide clear, concise responses to questions.",
-                "screenshot_mcq" => "Analyze this screenshot for multiple choice questions. Return only the letter (A, B, C, or D) of the correct answer.",
+                "mcq" => "You are helping with multiple choice questions. Analyze the question and provide: 1) The correct option letter/number, 2) A brief one-line explanation why it's correct. Format: 'Option: X - Brief reason'",
+                "java" => "Generate complete, runnable Java code that:\n1. Includes ALL necessary import statements (java.util.*, java.io.*, etc.)\n2. Has minimal comments (only for main method and class purpose)\n3. Uses simple data structures (ArrayList, HashMap, HashSet, StringBuilder, arrays, etc)\n4. Includes proper input handling (Scanner or BufferedReader)\n5. If PROMPT is provided, implement that specific requirement\n6. If compiler ERROR is present, fix the code to resolve the error\n7. Code must compile and run immediately without any modifications\nProvide only the complete code, no explanations.",
+                "python" => "Generate complete, runnable Python code that:\n1. Includes ALL necessary import statements at the top\n2. Has minimal comments (only for main function and module purpose)\n3. Uses simple data structures (list, dict, set)\n4. Includes proper input handling (input() or sys.stdin)\n5. If PROMPT is provided, implement that specific requirement\n6. If ERROR is present, fix the code to resolve the error\n7. Code must run immediately without any modifications\nProvide only the complete code, no explanations.",
+                "cpp" => "Generate complete, runnable C++ code that:\n1. Includes ALL necessary headers (#include <iostream>, <vector>, <map>, <set>, <string>, <algorithm>, etc.)\n2. Has minimal comments (only for main function and purpose)\n3. Uses STL containers (vector, map, set, string)\n4. Includes proper input handling (cin or getline)\n5. Uses 'using namespace std;' for simplicity\n6. If PROMPT is provided, implement that specific requirement\n7. If compiler ERROR is present, fix the code to resolve the error\n8. Code must compile and run immediately without any modifications\nProvide only the complete code, no explanations.",
+                "normal" => "You are a helpful assistant. Provide clear, focused answers with main points or summary. If this is a multiple choice question, give the correct option with brief explanation. Keep responses concise and to the point.",
                 _ => "You are a helpful assistant."
             };
         }
@@ -736,6 +1257,254 @@ namespace StealthAssistant
             {
                 // Handle silently
             }
+        }
+        
+        // Helper method to check if text is an MCQ
+        private bool IsMCQQuestion(string text)
+        {
+            // Check for common MCQ patterns
+            string lowerText = text.ToLower();
+            return lowerText.Contains("a)") || lowerText.Contains("b)") || lowerText.Contains("c)") || lowerText.Contains("d)") ||
+                   lowerText.Contains("a.") || lowerText.Contains("b.") || lowerText.Contains("c.") || lowerText.Contains("d.") ||
+                   lowerText.Contains("option a") || lowerText.Contains("option b") ||
+                   (lowerText.Contains("choose") && (lowerText.Contains("correct") || lowerText.Contains("best")));
+        }
+        
+        // Helper method to extract MCQ summary for popup (Option: X - Reason)
+        private string ExtractMCQSummary(string response)
+        {
+            try
+            {
+                // Look for pattern "Option: X" or just "X -" or "Answer: X"
+                var lines = response.Split('\n');
+                foreach (var line in lines)
+                {
+                    string trimmed = line.Trim();
+                    if (trimmed.StartsWith("Option:", StringComparison.OrdinalIgnoreCase) ||
+                        trimmed.StartsWith("Answer:", StringComparison.OrdinalIgnoreCase) ||
+                        System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^[A-D]\s*[-:]"))
+                    {
+                        // Return first 100 chars max for popup
+                        return trimmed.Length > 100 ? trimmed.Substring(0, 100) + "..." : trimmed;
+                    }
+                }
+                
+                // Fallback: return first non-empty line
+                foreach (var line in lines)
+                {
+                    string trimmed = line.Trim();
+                    if (!string.IsNullOrWhiteSpace(trimmed))
+                    {
+                        return trimmed.Length > 100 ? trimmed.Substring(0, 100) + "..." : trimmed;
+                    }
+                }
+                
+                return "See clipboard for answer";
+            }
+            catch
+            {
+                return "See clipboard for answer";
+            }
+        }
+        
+        // Helper method to extract summary (first N lines)
+        private string ExtractSummary(string response, int maxLines)
+        {
+            try
+            {
+                var lines = response.Split('\n');
+                var summaryLines = new List<string>();
+                int count = 0;
+                
+                foreach (var line in lines)
+                {
+                    string trimmed = line.Trim();
+                    if (!string.IsNullOrWhiteSpace(trimmed))
+                    {
+                        summaryLines.Add(trimmed);
+                        count++;
+                        if (count >= maxLines) break;
+                    }
+                }
+                
+                string summary = string.Join(" ", summaryLines);
+                // Limit to 150 chars for popup
+                return summary.Length > 150 ? summary.Substring(0, 150) + "..." : summary;
+            }
+            catch
+            {
+                return "See clipboard for full response";
+            }
+        }
+        
+        // Helper method to extract PROMPT content from text
+        private string ExtractPromptContent(string text)
+        {
+            try
+            {
+                // Look for pattern: prompt{ ... } or Prompt{ ... } or PROMPT{ ... } (case-insensitive)
+                var regex = new System.Text.RegularExpressions.Regex(
+                    @"prompt\s*\{([^}]+)\}",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                );
+                
+                var match = regex.Match(text);
+                if (match.Success && match.Groups.Count > 1)
+                {
+                    return match.Groups[1].Value.Trim();
+                }
+                
+                return string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+        
+        // Helper method to detect if text contains compiler errors
+        private bool ContainsCompilerError(string text)
+        {
+            try
+            {
+                string lowerText = text.ToLower();
+                
+                // Common error indicators
+                return lowerText.Contains("error:") ||
+                       lowerText.Contains("error ") ||
+                       lowerText.Contains("exception") ||
+                       lowerText.Contains("traceback") ||
+                       lowerText.Contains("syntaxerror") ||
+                       lowerText.Contains("nameerror") ||
+                       lowerText.Contains("indentationerror") ||
+                       lowerText.Contains("typeerror") ||
+                       lowerText.Contains("cannot find symbol") ||
+                       lowerText.Contains("incompatible types") ||
+                       lowerText.Contains("undefined reference") ||
+                       lowerText.Contains("no matching function") ||
+                       lowerText.Contains("compilation failed") ||
+                       lowerText.Contains("build failed");
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        
+        // Helper method to enhance extracted text with PROMPT and ERROR context
+        private string EnhanceExtractedTextForCodeGeneration(string extractedText)
+        {
+            try
+            {
+                var enhancedText = new StringBuilder();
+                
+                // Extract PROMPT if present
+                string promptContent = ExtractPromptContent(extractedText);
+                bool hasPrompt = !string.IsNullOrEmpty(promptContent);
+                
+                // Check for compiler errors
+                bool hasError = ContainsCompilerError(extractedText);
+                
+                // Build enhanced text
+                if (hasPrompt)
+                {
+                    enhancedText.AppendLine("REQUIREMENT:");
+                    enhancedText.AppendLine(promptContent);
+                    enhancedText.AppendLine();
+                }
+                
+                if (hasError)
+                {
+                    enhancedText.AppendLine("FIX THE FOLLOWING CODE WITH ERRORS:");
+                    enhancedText.AppendLine(extractedText);
+                }
+                else if (!hasPrompt)
+                {
+                    // No prompt, no error - just the extracted text (problem description or code)
+                    enhancedText.AppendLine(extractedText);
+                }
+                else
+                {
+                    // Has prompt but no error - include context
+                    enhancedText.AppendLine("CONTEXT:");
+                    enhancedText.AppendLine(extractedText);
+                }
+                
+                return enhancedText.ToString().Trim();
+            }
+            catch
+            {
+                return extractedText; // Fallback to original text
+            }
+        }
+        
+        // Helper method to extract code with minimal comments
+        private string ExtractCodeWithMinimalComments(string response, string language)
+        {
+            try
+            {
+                var lines = response.Split('\n');
+                var codeLines = new List<string>();
+                bool inCodeBlock = false;
+                
+                foreach (var line in lines)
+                {
+                    var trimmedLine = line.Trim();
+                    
+                    // Handle code block markers
+                    if (trimmedLine.StartsWith("```"))
+                    {
+                        inCodeBlock = !inCodeBlock;
+                        continue;
+                    }
+                    
+                    // Skip explanatory text outside code blocks
+                    if (!inCodeBlock && !IsCodeLine(trimmedLine, language))
+                    {
+                        continue;
+                    }
+                    
+                    // Keep minimal comments (class/method level only)
+                    if (trimmedLine.StartsWith("//") || trimmedLine.StartsWith("#") || trimmedLine.StartsWith("/*"))
+                    {
+                        // Keep only if it's a main/class comment
+                        if (trimmedLine.ToLower().Contains("main") || 
+                            trimmedLine.ToLower().Contains("class") ||
+                            trimmedLine.ToLower().Contains("function"))
+                        {
+                            codeLines.Add(line);
+                        }
+                        continue;
+                    }
+                    
+                    codeLines.Add(line);
+                }
+                
+                return string.Join("\n", codeLines).Trim();
+            }
+            catch
+            {
+                return response; // Return original if extraction fails
+            }
+        }
+        
+        // Helper to detect code lines
+        private bool IsCodeLine(string line, string language)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return false;
+            
+            return language switch
+            {
+                "java" => line.Contains("public") || line.Contains("private") || line.Contains("class") || 
+                          line.Contains("void") || line.Contains("int") || line.Contains("String") ||
+                          line.Contains("import") || line.Contains("{") || line.Contains("}"),
+                "python" => line.StartsWith("def ") || line.StartsWith("class ") || line.StartsWith("import ") ||
+                            line.Contains("return") || line.Contains("print(") || line.Contains("if ") ||
+                            line.Contains("for ") || line.Contains("while "),
+                "cpp" => line.Contains("#include") || line.Contains("int main") || line.Contains("std::") ||
+                         line.Contains("class ") || line.Contains("void ") || line.Contains("{") || line.Contains("}"),
+                _ => false
+            };
         }
         
         #endregion
@@ -994,37 +1763,6 @@ namespace StealthAssistant
             SetCursorPos(currentPos.X, currentPos.Y);
         }
         
-        private void MoveCursorForMCQAnswer(string response)
-        {
-            try
-            {
-                GetCursorPos(out Point currentPos);
-                const int moveDistance = 40; // Visible movement distance
-                
-                var answer = DetectMCQAnswer(response);
-                
-                switch (answer.ToUpper())
-                {
-                    case "A":
-                        SetCursorPos(currentPos.X, currentPos.Y - moveDistance); // Up
-                        break;
-                    case "B":
-                        SetCursorPos(currentPos.X + moveDistance, currentPos.Y); // Right
-                        break;
-                    case "C":
-                        SetCursorPos(currentPos.X, currentPos.Y + moveDistance); // Down
-                        break;
-                    case "D":
-                        SetCursorPos(currentPos.X - moveDistance, currentPos.Y); // Left
-                        break;
-                }
-            }
-            catch
-            {
-                // Silently handle any cursor movement errors
-            }
-        }
-        
         private string DetectMCQAnswer(string response)
         {
             try
@@ -1057,12 +1795,383 @@ namespace StealthAssistant
             }
         }
         
+        private void MoveCursorForMCQAnswer(string response)
+        {
+            try
+            {
+                GetCursorPos(out Point currentPos);
+                const int moveDistance = 40; // Visible movement distance
+                
+                var answer = DetectMCQAnswer(response);
+                
+                switch (answer.ToUpper())
+                {
+                    case "A":
+                        SetCursorPos(currentPos.X, currentPos.Y - moveDistance); // Up
+                        break;
+                    case "B":
+                        SetCursorPos(currentPos.X + moveDistance, currentPos.Y); // Right
+                        break;
+                    case "C":
+                        SetCursorPos(currentPos.X, currentPos.Y + moveDistance); // Down
+                        break;
+                    case "D":
+                        SetCursorPos(currentPos.X - moveDistance, currentPos.Y); // Left
+                        break;
+                }
+            }
+            catch
+            {
+                // Silently handle any cursor movement errors
+            }
+        }
+        
+        #endregion
+        
+        #region Auto-Typing
+        
+        private void HandleAutoTypePauseResume()
+        {
+            try
+            {
+                lock (_autoTypeLock)
+                {
+                    if (_autoTypeTimer == null || string.IsNullOrEmpty(_autoTypeText))
+                    {
+                        Debug.WriteLine("Auto-type: Nothing to pause/resume");
+                        var popup = new ResponsePopup("Nothing to pause/resume");
+                        popup.Show();
+                        return; // Nothing to pause/resume
+                    }
+                    
+                    _autoTypePaused = !_autoTypePaused;
+                    Debug.WriteLine($"Auto-type: {(_autoTypePaused ? "PAUSED" : "RESUMED")} at position {_autoTypePosition}");
+                    var statusPopup = new ResponsePopup(_autoTypePaused ? "PAUSED" : "RESUMED");
+                    statusPopup.Show();
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Auto-type pause/resume error: {ex.Message}");
+                var errorPopup = new ResponsePopup($"Error: {ex.Message}");
+                errorPopup.Show();
+            }
+        }
+        
+        private void HandleAutoTypeCompilerMode()
+        {
+            try
+            {
+                // Show confirmation popup
+                var popup = new ResponsePopup("Compiler mode starting...");
+                popup.Show();
+                
+                // Get clipboard text on STA thread
+                string clipboardText = "";
+                var thread = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        clipboardText = Clipboard.GetText();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Clipboard access error: {ex.Message}");
+                    }
+                });
+                thread.SetApartmentState(System.Threading.ApartmentState.STA);
+                thread.Start();
+                thread.Join();
+                
+                if (string.IsNullOrEmpty(clipboardText))
+                {
+                    Debug.WriteLine("Auto-type compiler: Clipboard is empty");
+                    var emptyPopup = new ResponsePopup("Clipboard is empty!");
+                    emptyPopup.Show();
+                    return;
+                }
+                
+                // Process text for compiler mode: strip leading whitespace from each line
+                string processedText = PrepareTextForCompilerMode(clipboardText);
+                
+                lock (_autoTypeLock)
+                {
+                    // Stop any existing typing
+                    _autoTypeTimer?.Dispose();
+                    
+                    Debug.WriteLine($"Auto-type compiler: Starting with {processedText.Length} characters");
+                    var startPopup = new ResponsePopup($"Compiler mode: {processedText.Length} chars");
+                    startPopup.Show();
+                    
+                    // Reset and start from beginning
+                    _autoTypeText = processedText;
+                    _autoTypePosition = 0;
+                    _autoTypePaused = false;
+                    
+                    // Start typing at same speed as Z+V
+                    _autoTypeTimer = new System.Threading.Timer(AutoTypeCallback, null, 0, 1);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Auto-type compiler start error: {ex.Message}");
+                var errorPopup = new ResponsePopup($"Error: {ex.Message}");
+                errorPopup.Show();
+            }
+        }
+        
+        private string PrepareTextForCompilerMode(string text)
+        {
+            try
+            {
+                var lines = text.Split('\n');
+                var processedLines = new List<string>();
+                
+                foreach (var line in lines)
+                {
+                    // Remove leading whitespace (tabs and spaces)
+                    // Keep the actual code content
+                    string trimmedLine = line.TrimStart(' ', '\t');
+                    
+                    // Keep empty lines as-is (just newline)
+                    if (string.IsNullOrWhiteSpace(trimmedLine))
+                    {
+                        processedLines.Add("");
+                    }
+                    else
+                    {
+                        processedLines.Add(trimmedLine);
+                    }
+                }
+                
+                // Join with \n (our auto-type will convert to Enter key)
+                return string.Join("\n", processedLines);
+            }
+            catch
+            {
+                // Fallback to original text if processing fails
+                return text;
+            }
+        }
+        
+        #endregion
+        
+        #region Auto-Typing
+        
+        private void HandleAutoTypeStart()
+        {
+            try
+            {
+                // Show confirmation popup
+                var popup = new ResponsePopup("Auto-type starting...");
+                popup.Show();
+                
+                // Get clipboard text on STA thread
+                string clipboardText = "";
+                var thread = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        clipboardText = Clipboard.GetText();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Clipboard access error: {ex.Message}");
+                    }
+                });
+                thread.SetApartmentState(System.Threading.ApartmentState.STA);
+                thread.Start();
+                thread.Join();
+                
+                if (string.IsNullOrEmpty(clipboardText))
+                {
+                    Debug.WriteLine("Auto-type: Clipboard is empty");
+                    var emptyPopup = new ResponsePopup("Clipboard is empty!");
+                    emptyPopup.Show();
+                    return;
+                }
+                
+                lock (_autoTypeLock)
+                {
+                    // Stop any existing typing
+                    _autoTypeTimer?.Dispose();
+                    
+                    Debug.WriteLine($"Auto-type: Starting with {clipboardText.Length} characters");
+                    var startPopup = new ResponsePopup($"Typing {clipboardText.Length} chars...");
+                    startPopup.Show();
+                    
+                    // Reset and start from beginning
+                    _autoTypeText = clipboardText;
+                    _autoTypePosition = 0;
+                    _autoTypePaused = false;
+                    
+                    // Start typing at 10,000 chars/sec using SendInput (10 chars per 1ms)
+                    // SendInput is hardware-level simulation, much harder to detect than SendKeys
+                    _autoTypeTimer = new System.Threading.Timer(AutoTypeCallback, null, 0, 1);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Auto-type start error: {ex.Message}");
+                var errorPopup = new ResponsePopup($"Error: {ex.Message}");
+                errorPopup.Show();
+            }
+        }
+        
+        
+        private void AutoTypeCallback(object? state)
+        {
+            try
+            {
+                lock (_autoTypeLock)
+                {
+                    // Check if paused
+                    if (_autoTypePaused)
+                    {
+                        return;
+                    }
+                    
+                    // Check if finished
+                    if (_autoTypePosition >= _autoTypeText.Length)
+                    {
+                        _autoTypeTimer?.Dispose();
+                        _autoTypeTimer = null;
+                        return;
+                    }
+                    
+                    // Type 10 characters per callback using SendInput (10,000 chars/sec)
+                    int charsToType = Math.Min(10, _autoTypeText.Length - _autoTypePosition);
+                    
+                    for (int i = 0; i < charsToType; i++)
+                    {
+                        char c = _autoTypeText[_autoTypePosition + i];
+                        SendCharacterUsingSendInput(c);
+                    }
+                    
+                    // Move to next position
+                    _autoTypePosition += charsToType;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Auto-type callback error: {ex.Message}");
+                // Stop on error
+                lock (_autoTypeLock)
+                {
+                    _autoTypeTimer?.Dispose();
+                    _autoTypeTimer = null;
+                }
+            }
+        }
+        
+        private void SendCharacterUsingSendInput(char c)
+        {
+            // Handle special characters
+            if (c == '\r')
+            {
+                return; // Skip carriage return, we'll handle \n
+            }
+            else if (c == '\n')
+            {
+                // Send Enter key
+                SendKeyPress(0x0D); // VK_RETURN
+                return;
+            }
+            else if (c == '\t')
+            {
+                // Send Tab key
+                SendKeyPress(0x09); // VK_TAB
+                return;
+            }
+            
+            // Create input for key down and key up
+            INPUT[] inputs = new INPUT[2];
+            
+            // Key down
+            inputs[0] = new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                u = new INPUTUNION
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = 0,
+                        wScan = c,
+                        dwFlags = KEYEVENTF_UNICODE,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+            
+            // Key up
+            inputs[1] = new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                u = new INPUTUNION
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = 0,
+                        wScan = c,
+                        dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+            
+            SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
+        }
+        
+        private void SendKeyPress(ushort vkCode)
+        {
+            INPUT[] inputs = new INPUT[2];
+            
+            // Key down
+            inputs[0] = new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                u = new INPUTUNION
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = vkCode,
+                        wScan = 0,
+                        dwFlags = 0,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+            
+            // Key up
+            inputs[1] = new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                u = new INPUTUNION
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = vkCode,
+                        wScan = 0,
+                        dwFlags = KEYEVENTF_KEYUP,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+            
+            SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT)));
+        }
+        
         #endregion
         
         #region Cleanup
         
         public void Dispose()
         {
+            _autoTypeTimer?.Dispose();
             _hotkeyWindow?.Dispose();
             _clipboardViewer?.Dispose();
             _httpClient?.Dispose();

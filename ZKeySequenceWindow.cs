@@ -34,9 +34,7 @@ namespace StealthAssistant
         private IntPtr _hookID = IntPtr.Zero;
         private readonly LowLevelKeyboardProc _proc;
         private bool _zPressed = false;
-        private bool _rPressed = false; // For three-key sequences
         private DateTime _lastZPress = DateTime.MinValue;
-        private DateTime _lastRPress = DateTime.MinValue;
         private readonly System.Windows.Forms.Timer _sequenceTimer;
         private const int SEQUENCE_TIMEOUT_MS = 1000;
         
@@ -107,40 +105,25 @@ namespace StealthAssistant
         {
             var now = DateTime.Now;
             
+            // Handle backtick (`) for pause/resume - works without Z
+            if (key == Keys.Oemtilde || key == (Keys)192) // Backtick key
+            {
+                Debug.WriteLine("Backtick detected - pause/resume");
+                OnHotkeyDetected(8); // Pause/Resume auto-typing (ID 8)
+                return;
+            }
+            
             if (key == Keys.Z)
             {
                 _zPressed = true;
-                _rPressed = false;
                 _lastZPress = now;
                 _sequenceTimer.Stop();
                 _sequenceTimer.Start();
                 Debug.WriteLine("Z key pressed - waiting for sequence key");
             }
-            else if (_zPressed && key == Keys.R && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
+            else if (_zPressed && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
             {
-                // Z+R detected, wait for third key
-                _rPressed = true;
-                _lastRPress = now;
-                _sequenceTimer.Stop();
-                _sequenceTimer.Start();
-                Debug.WriteLine("Z+R pressed - waiting for S/Q/J");
-            }
-            else if (_zPressed && _rPressed && (now - _lastRPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
-            {
-                // Three-key sequence: Z+R+S/Q/J for screenshot OCR
-                var hotkeyId = GetThreeKeyHotkeyId(key);
-                if (hotkeyId > 0)
-                {
-                    Debug.WriteLine($"Z+R+{key} sequence detected");
-                    OnHotkeyDetected(hotkeyId);
-                    ResetSequence();
-                    return;
-                }
-                ResetSequence();
-            }
-            else if (_zPressed && !_rPressed && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
-            {
-                // Two-key sequence: Z+Key (existing functionality)
+                // Two-key sequence: Z+Key
                 var hotkeyId = GetHotkeyId(key);
                 if (hotkeyId > 0)
                 {
@@ -151,7 +134,7 @@ namespace StealthAssistant
                 }
                 ResetSequence();
             }
-            else if (key != Keys.Z && key != Keys.R)
+            else if (key != Keys.Z)
             {
                 ResetSequence();
             }
@@ -159,30 +142,32 @@ namespace StealthAssistant
         
         private int GetHotkeyId(Keys key)
         {
-            return key switch
+            int result = key switch
             {
-                Keys.S => 1, // Z+S - Normal query
-                Keys.Q => 2, // Z+Q - MCQ query  
-                Keys.J => 3, // Z+J - Java code
-                Keys.A => 4, // Z+A - Append
-                Keys.M => 5, // Z+M - Status
-                Keys.X => 6, // Z+X - Screenshot MCQ (old)
-                Keys.E => 7, // Z+E - Toggle clipboard viewer
-                Keys.Up => 8, // Z+Up - Scroll up in viewer
-                Keys.Down => 9, // Z+Down - Scroll down in viewer
+                Keys.M => 1, // Z+M - Status
+                Keys.W => 2, // Z+W - Extract text and get AI response
+                Keys.J => 3, // Z+J - Generate Java code
+                Keys.P => 4, // Z+P - Generate Python code
+                Keys.C => 5, // Z+C - Generate C++ code
+                Keys.E => 6, // Z+E - Toggle clipboard viewer
+                Keys.V => 7, // Z+V - Auto-type (fast mode - 10,000 chars/sec)
+                Keys.B => 10, // Z+B - Auto-type compiler mode (strips indentation)
+                Keys.R => 12, // Z+R - Reset conversation history
                 _ => 0
             };
+            
+            if (result > 0)
+            {
+                Debug.WriteLine($"GetHotkeyId: {key} => {result}");
+            }
+            
+            return result;
         }
         
         private int GetThreeKeyHotkeyId(Keys key)
         {
-            return key switch
-            {
-                Keys.S => 10, // Z+R+S - Screenshot OCR Normal query
-                Keys.Q => 11, // Z+R+Q - Screenshot OCR MCQ query
-                Keys.J => 12, // Z+R+J - Screenshot OCR Java code
-                _ => 0
-            };
+            // No three-key sequences needed anymore
+            return 0;
         }
         
         private void OnSequenceTimeout(object? sender, EventArgs e)
@@ -193,7 +178,6 @@ namespace StealthAssistant
         private void ResetSequence()
         {
             _zPressed = false;
-            _rPressed = false;
             _sequenceTimer.Stop();
         }
         

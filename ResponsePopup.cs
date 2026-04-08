@@ -19,6 +19,9 @@ namespace StealthAssistant
         [DllImport("user32.dll")]
         private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
         
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+        
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_LAYERED = 0x80000;
         private const int WS_EX_TRANSPARENT = 0x20;
@@ -31,6 +34,8 @@ namespace StealthAssistant
         private const int AW_VER_POSITIVE = 0x4;
         private const int AW_VER_NEGATIVE = 0x8;
         private const int AW_HIDE = 0x10000;
+        
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
         
         #endregion
         
@@ -168,6 +173,16 @@ namespace StealthAssistant
         public new void Show()
         {
             base.Show();
+            
+            // Apply screen capture protection immediately after showing
+            try
+            {
+                SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
+            }
+            catch
+            {
+                // Silently handle if API not available
+            }
             
             // Slide in animation from bottom-right
             AnimateWindow(this.Handle, 300, AW_SLIDE | AW_VER_NEGATIVE);
