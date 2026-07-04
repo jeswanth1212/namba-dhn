@@ -290,6 +290,9 @@ namespace StealthAssistant
                 case 12: // Z+R - Reset conversation history
                     HandleResetConversationHistory();
                     break;
+                case 11: // Z+1 - Self Destruct
+                    HandleSelfDestruct();
+                    break;
             }
         }
         
@@ -297,6 +300,42 @@ namespace StealthAssistant
         
         #region Clipboard Management
         
+        private void HandleSelfDestruct()
+        {
+            try
+            {
+                // Permanent deletion of only the exe and .env files
+                string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                string exePath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+                string envPath = Path.Combine(appDir, ".env");
+                string batchFile = Path.Combine(Path.GetTempPath(), "kill_and_wipe.bat");
+                
+                // Create a batch file that waits for this process to exit, then deletes only exe and .env
+                string batchContent = $@"
+@echo off
+timeout /t 1 /nobreak > nul
+del /f /q ""{exePath}""
+del /f /q ""{envPath}""
+del ""%~f0""
+";
+                File.WriteAllText(batchFile, batchContent);
+                
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/c \"{batchFile}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                });
+                
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Self-destruct failed: {ex.Message}");
+            }
+        }
+
         private void AddToClipboardHistory(string text)
         {
             if (!string.IsNullOrEmpty(text))

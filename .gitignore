@@ -372,6 +372,19 @@ secrets.json
 
 # Distribution folder - exclude all generated files
 dist/
+dist-advanced/
+dist-clean/
+dist-final/
+
+# Large executable files (hosted on Firebase Storage)
+landing-page/public/VITpyq.exe
+landing-page/public/*.exe
+
+# Build output executables and DLLs
+**/*.exe
+**/*.dll
+!obj/**/*.dll
+!obj/**/*.exe
 
 # Temporary files
 *.tmp

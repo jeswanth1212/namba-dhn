@@ -1,0 +1,81 @@
+<html>
+<head>
+<title>Key Debug Test</title>
+<HTA:APPLICATION 
+    ID="KeyDebugTest"
+    APPLICATIONNAME="Key Debug Test"
+    BORDER="thin"
+    CAPTION="yes"
+    SHOWINTASKBAR="yes"
+    SINGLEINSTANCE="yes"
+    SYSMENU="yes"
+    WINDOWSTATE="normal">
+</head>
+<body>
+<h2>Key Detection Debug</h2>
+<div id="output">Press Z+M to test key detection...</div>
+<br>
+<button onclick="TestKeys()">Test Z+M Detection</button>
+<button onclick="ClearOutput()">Clear</button>
+
+<script language="VBScript">
+Dim objShell, objFSO
+Set objShell = CreateObject("WScript.Shell")
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+
+Function IsKeyPressed(keyCode)
+    On Error Resume Next
+    Dim tempFile, result
+    tempFile = objShell.ExpandEnvironmentStrings("%TEMP%") & "\key_" & keyCode & "_" & Timer() & ".tmp"
+    
+    objShell.Run "powershell -WindowStyle Hidden -Command ""Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Win32 { [DllImport(\""user32.dll\"")] public static extern short GetAsyncKeyState(int vKey); }'; $result = [Win32]::GetAsyncKeyState(" & keyCode & ") -band 0x8000; if ($result) { 'PRESSED' } else { 'NOT_PRESSED' } | Out-File -FilePath '" & tempFile & "' -Encoding ASCII -NoNewline""", 0, True
+    
+    Dim attempts
+    attempts = 0
+    Do While Not objFSO.FileExists(tempFile) And attempts < 20
+        WScript.Sleep 10
+        attempts = attempts + 1
+    Loop
+    
+    If objFSO.FileExists(tempFile) Then
+        Dim fileContent
+        Set fileContent = objFSO.OpenTextFile(tempFile, 1)
+        result = Trim(fileContent.ReadAll())
+        fileContent.Close
+        objFSO.DeleteFile tempFile, True
+        IsKeyPressed = (result = "PRESSED")
+    Else
+        IsKeyPressed = False
+    End If
+End Function
+
+Sub TestKeys()
+    Dim output, zPressed, mPressed
+    zPressed = IsKeyPressed(90) ' Z key
+    mPressed = IsKeyPressed(77) ' M key
+    
+    output = "Z Key: " & IIf(zPressed, "PRESSED", "NOT PRESSED") & "<br>"
+    output = output & "M Key: " & IIf(mPressed, "PRESSED", "NOT PRESSED") & "<br>"
+    output = output & "Time: " & Now() & "<br><br>"
+    
+    document.getElementById("output").innerHTML = document.getElementById("output").innerHTML & output
+End Sub
+
+Sub ClearOutput()
+    document.getElementById("output").innerHTML = "Press Z+M to test key detection..."
+End Sub
+
+' Auto-test every 500ms
+window.setInterval "TestKeys", 500
+
+Function IIf(condition, trueValue, falseValue)
+    If condition Then
+        IIf = trueValue
+    Else
+        IIf = falseValue
+    End If
+End Function
+
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@
     <Nullable>enable</Nullable>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <StartupObject>StealthAssistant.Program</StartupObject>
+    <AssemblyName>svchost</AssemblyName>
     <AssemblyTitle>Windows Service Host</AssemblyTitle>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -22,8 +23,10 @@
     <AssemblyProduct>Windows Operating System</AssemblyProduct>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Ensure maximum compatibility -->
-    <DebugType>embedded</DebugType>
-    <DebugSymbols>true</DebugSymbols>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- Prevent DLL extraction -->
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>

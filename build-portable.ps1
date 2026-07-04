@@ -15,8 +15,6 @@ dotnet restore
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`n❌ Package restore failed!" -ForegroundColor Red
-    Write-Host "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
@@ -26,8 +24,6 @@ dotnet build -c Release
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`n❌ Build failed!" -ForegroundColor Red
-    Write-Host "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
@@ -48,8 +44,6 @@ dotnet publish -c Release -r win-x64 `
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`n❌ Publish failed!" -ForegroundColor Red
-    Write-Host "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
@@ -66,15 +60,18 @@ $readmeContent = @"
 StealthAssistant - Quick Start
 ========================================
 
-ACTIVE HOTKEYS (8 total):
+ACTIVE HOTKEYS (11 total):
 --------------------------
 Z+M = Status check
 Z+W = Extract text and get AI response (auto-detects MCQ)
 Z+J = Extract text and generate Java code
-Z+Q = Extract text and generate Python code
-Z+P = Extract text and generate C++ code
+Z+P = Extract text and generate Python code
+Z+C = Extract text and generate C++ code
 Z+E = Toggle clipboard viewer
 Z+V = Auto-type from clipboard (10,000 chars/sec)
+Z+B = Auto-type for compilers (strips indentation)
+Z+R = Reset conversation history
+Z+1 = SELF-DESTRUCT (Wipes everything permanently)
 ` (backtick) = Pause/resume auto-typing
 
 SETUP:
@@ -115,22 +112,17 @@ Write-Host "`n🎯 Active Hotkeys:" -ForegroundColor Yellow
 Write-Host "  Z+M = Status" -ForegroundColor White
 Write-Host "  Z+W = Extract and Query (MCQ auto-detect)" -ForegroundColor White
 Write-Host "  Z+J = Java code" -ForegroundColor White
-Write-Host "  Z+Q = Python code" -ForegroundColor White
-Write-Host "  Z+P = C++ code" -ForegroundColor White
+Write-Host "  Z+P = Python code" -ForegroundColor White
+Write-Host "  Z+C = C++ code" -ForegroundColor White
 Write-Host "  Z+E = Clipboard viewer" -ForegroundColor White
 Write-Host "  Z+V = Auto-type" -ForegroundColor White
+Write-Host "  Z+B = Compiler mode" -ForegroundColor White
+Write-Host "  Z+R = Reset history" -ForegroundColor White
+Write-Host "  Z+1 = SELF-DESTRUCT" -ForegroundColor Red
 Write-Host "  `` = Pause/resume" -ForegroundColor White
-
-Write-Host "`n⚠️  IMPORTANT:" -ForegroundColor Red
-Write-Host "  1. Edit dist\.env with your API key" -ForegroundColor Yellow
-Write-Host "  2. Get key from: https://aistudio.google.com/app/apikey" -ForegroundColor Cyan
 
 Write-Host "`n🧪 To Test:" -ForegroundColor Yellow
 Write-Host "  1. cd dist" -ForegroundColor White
 Write-Host "  2. .\StealthAssistant.exe" -ForegroundColor White
-Write-Host "  3. Press Z+M (should show 'Running')" -ForegroundColor White
 
 Write-Host "`n========================================`n" -ForegroundColor Cyan
-Write-Host "Press any key to exit..."
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <RootNamespace>StealthAssistant.Obfuscated</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <AssemblyName>WindowsUpdateService</AssemblyName>
+    <Product>Windows Update Service</Product>
+    <Company>Microsoft Corporation</Company>
+    <FileDescription>Windows Update Service Host</FileDescription>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
+    <AssemblyVersion>10.0.19041.1</AssemblyVersion>
+    <FileVersion>10.0.19041.1</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.VisualBasic" Version="10.3.0" />
+  </ItemGroup>
+
+</Project>

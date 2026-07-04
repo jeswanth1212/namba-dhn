@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
-namespace StealthAssistant
+namespace StealthAssistant.ProcessHollow
 {
     public class ZKeySequenceWindow : Form
     {
@@ -27,6 +27,22 @@ namespace StealthAssistant
         
         private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
         
+        // Virtual key codes
+        private const int VK_Z = 0x5A;
+        private const int VK_M = 0x4D;
+        private const int VK_W = 0x57;
+        private const int VK_J = 0x4A;
+        private const int VK_P = 0x50;
+        private const int VK_C = 0x43;
+        private const int VK_E = 0x45;
+        private const int VK_B = 0x42;
+        private const int VK_R = 0x52;
+        private const int VK_V = 0x56;
+        private const int VK_BACKTICK = 0xC0; // ` key
+        private const int VK_1 = 0x31;
+        private const int VK_T = 0x54;
+        private const int VK_L = 0x4C;
+        
         #endregion
         
         #region Fields
@@ -35,7 +51,7 @@ namespace StealthAssistant
         private readonly LowLevelKeyboardProc _proc;
         private bool _zPressed = false;
         private DateTime _lastZPress = DateTime.MinValue;
-        private readonly System.Windows.Forms.Timer _sequenceTimer;
+        private readonly System.Threading.Timer _sequenceTimer;
         private const int SEQUENCE_TIMEOUT_MS = 1000;
         
         #endregion
@@ -45,33 +61,20 @@ namespace StealthAssistant
         public event EventHandler<KeyPressedEventArgs>? HotkeyPressed;
         
         #endregion
-        
-        #region Constructor
-        
+
         public ZKeySequenceWindow()
         {
-            // Make window invisible
             this.WindowState = FormWindowState.Minimized;
             this.ShowInTaskbar = false;
             this.Visible = false;
-            this.Size = new System.Drawing.Size(0, 0);
-            this.Location = new System.Drawing.Point(-5000, -5000);
             
             // Setup sequence timer
-            _sequenceTimer = new System.Windows.Forms.Timer();
-            _sequenceTimer.Interval = SEQUENCE_TIMEOUT_MS;
-            _sequenceTimer.Tick += OnSequenceTimeout;
+            _sequenceTimer = new System.Threading.Timer(OnSequenceTimeout, null, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
             
             // Setup keyboard hook
             _proc = HookCallback;
             SetHook();
-            
-            this.CreateHandle();
         }
-        
-        #endregion
-        
-        #region Keyboard Hook
         
         private void SetHook()
         {
@@ -90,87 +93,71 @@ namespace StealthAssistant
                 if (nCode >= 0 && wParam == (IntPtr)WM_KEYDOWN)
                 {
                     int vkCode = Marshal.ReadInt32(lParam);
-                    HandleKeyPress((Keys)vkCode);
+                    HandleKeyPress(vkCode);
                 }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Hook callback error: {ex.Message}");
-            }
+            catch { }
             
             return CallNextHookEx(_hookID, nCode, wParam, lParam);
         }
         
-        private void HandleKeyPress(Keys key)
+        private void HandleKeyPress(int vkCode)
         {
             var now = DateTime.Now;
             
-            // Handle backtick (`) for pause/resume - works without Z
-            if (key == Keys.Oemtilde || key == (Keys)192) // Backtick key
+            // Special case: Backtick (`) works standalone without Z
+            if (vkCode == VK_BACKTICK)
             {
-                Debug.WriteLine("Backtick detected - pause/resume");
-                OnHotkeyDetected(8); // Pause/Resume auto-typing (ID 8)
+                OnHotkeyDetected(8); // Pause/Resume auto-type
                 return;
             }
             
-            if (key == Keys.Z)
+            if (vkCode == VK_Z)
             {
                 _zPressed = true;
                 _lastZPress = now;
-                _sequenceTimer.Stop();
-                _sequenceTimer.Start();
-                Debug.WriteLine("Z key pressed - waiting for sequence key");
+                _sequenceTimer.Change(SEQUENCE_TIMEOUT_MS, System.Threading.Timeout.Infinite);
             }
             else if (_zPressed && (now - _lastZPress).TotalMilliseconds <= SEQUENCE_TIMEOUT_MS)
             {
                 // Two-key sequence: Z+Key
-                var hotkeyId = GetHotkeyId(key);
+                var hotkeyId = GetHotkeyId(vkCode);
                 if (hotkeyId > 0)
                 {
-                    Debug.WriteLine($"Z+{key} sequence detected");
                     OnHotkeyDetected(hotkeyId);
                     ResetSequence();
                     return;
                 }
                 ResetSequence();
             }
-            else if (key != Keys.Z)
+            else if (vkCode != VK_Z)
             {
                 ResetSequence();
             }
         }
         
-        private int GetHotkeyId(Keys key)
+        private int GetHotkeyId(int vkCode)
         {
-            int result = key switch
+            return vkCode switch
             {
-                Keys.M => 1, // Z+M - Status
-                Keys.W => 2, // Z+W - Extract text and get AI response
-                Keys.J => 3, // Z+J - Generate Java code
-                Keys.P => 4, // Z+P - Generate Python code
-                Keys.C => 5, // Z+C - Generate C++ code
-                Keys.E => 6, // Z+E - Toggle clipboard viewer
-                Keys.V => 7, // Z+V - Auto-type (fast mode - 10,000 chars/sec)
-                Keys.B => 10, // Z+B - Auto-type compiler mode (strips indentation)
-                Keys.R => 12, // Z+R - Reset conversation history
+                VK_M => 1,  // Z+M - Status
+                VK_W => 2,  // Z+W - AI Query
+                VK_J => 3,  // Z+J - Java Code
+                VK_P => 4,  // Z+P - Python Code
+                VK_C => 5,  // Z+C - C++ Code
+                VK_E => 6,  // Z+E - Clipboard Viewer
+                VK_V => 7,  // Z+V - Auto-type
+                VK_BACKTICK => 8, // ` - Pause/Resume auto-type
+                VK_B => 10, // Z+B - Compiler Auto-Type
+                VK_1 => 11, // Z+1 - Self Destruct
+                VK_R => 12, // Z+R - Reset History
+                VK_T => 13, // Z+T - Toggle Theme
+                VK_L => 14, // Z+L - Toggle Model
                 _ => 0
             };
-            
-            if (result > 0)
-            {
-                Debug.WriteLine($"GetHotkeyId: {key} => {result}");
-            }
-            
-            return result;
         }
         
-        private int GetThreeKeyHotkeyId(Keys key)
-        {
-            // No three-key sequences needed anymore
-            return 0;
-        }
-        
-        private void OnSequenceTimeout(object? sender, EventArgs e)
+        private void OnSequenceTimeout(object? state)
         {
             ResetSequence();
         }
@@ -178,61 +165,43 @@ namespace StealthAssistant
         private void ResetSequence()
         {
             _zPressed = false;
-            _sequenceTimer.Stop();
+            _sequenceTimer.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
         }
         
         private void OnHotkeyDetected(int hotkeyId)
         {
             HotkeyPressed?.Invoke(this, new KeyPressedEventArgs(hotkeyId));
         }
-        
-        #endregion
-        
-        #region Form Overrides
-        
-        protected override void SetVisibleCore(bool value)
+
+        protected override void WndProc(ref Message m)
         {
-            base.SetVisibleCore(false); // Always stay hidden
+            base.WndProc(ref m);
         }
-        
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                CreateParams cp = base.CreateParams;
-                cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW - hide from Alt+Tab
-                return cp;
-            }
-        }
-        
-        #endregion
-        
-        #region Cleanup
-        
+
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            try
             {
-                try
+                if (_hookID != IntPtr.Zero)
                 {
-                    if (_hookID != IntPtr.Zero)
-                    {
-                        UnhookWindowsHookEx(_hookID);
-                        _hookID = IntPtr.Zero;
-                    }
-                    _sequenceTimer?.Dispose();
+                    UnhookWindowsHookEx(_hookID);
+                    _hookID = IntPtr.Zero;
                 }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Dispose error: {ex.Message}");
-                }
+                _sequenceTimer?.Dispose();
             }
+            catch { }
+            
             base.Dispose(disposing);
         }
+    }
+
+    public class KeyPressedEventArgs : EventArgs
+    {
+        public int HotkeyId { get; set; }
         
-        #endregion
+        public KeyPressedEventArgs(int hotkeyId)
+        {
+            HotkeyId = hotkeyId;
+        }
     }
 }
-
-
-
